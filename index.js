@@ -3,14 +3,13 @@
 const EventEmitter = require("events").EventEmitter;
 const mongodb = require("mongodb");
 const MongoClient = require("mongodb").MongoClient;
-const assert = require("assert");
 
-const TASK_PROCESS = "task_process";
-const TASK_DONE = "task_done";
-const TASK_ERROR = "task_error";
+const TASK_PROCESS_STATE = "task_process";
+const TASK_DONE_STATE = "task_done";
+const TASK_ERROR_STATE = "task_error";
 
 const delay = (interval) => {
-	return new Promise((resolve, reject) => {
+	return new Promise(resolve => {
 		setTimeout(() => { resolve(); }, interval);
 	});
 };
@@ -19,8 +18,11 @@ class Task extends EventEmitter {
 
 	constructor(props) {
 		super();
-		this.id = "" + props._id;
 		this.data = props;
+	}
+
+	get id() {
+		return this.data._id.toString();
 	}
 
 	set data(value) {
@@ -32,11 +34,11 @@ class Task extends EventEmitter {
 	}
 
 	done() {
-		this.emit(TASK_DONE, { id: this.id });
+		this.emit(TASK_DONE_STATE, { id: this.id });
 	}
 
 	error(error) {
-		this.emit(TASK_ERROR, { id: this.id, error });
+		this.emit(TASK_ERROR_STATE, { id: this.id, error });
 	}
 
 }
@@ -50,10 +52,10 @@ class QueueListner extends EventEmitter {
 		this.dbUrl = props.db.url;
 		this.delay = props.delay;
 		this.limit = props.limit || 5;
-		this.prev = null;
 		this._taskOnDone = this._taskOnDone.bind(this);
 		this._taskOnError = this._taskOnError.bind(this);
 		this._setState = this._setState.bind(this);
+		this.tasks = [];
 	}
 
 	async _setState(taskId, state) {
@@ -64,12 +66,14 @@ class QueueListner extends EventEmitter {
 		return;
 	}
 
-	_taskOnDone(task) {
-		return this._setState(task.id, TASK_DONE);
+	async _taskOnDone(task) {
+		this.tasks.splice(this.tasks.indexOf(task.id), 1);
+		return await this._setState(task.id, TASK_DONE_STATE);
 	}
 
-	_taskOnError(task) {
-		return this._setState(task.id, TASK_ERROR);
+	async _taskOnError(task) {
+		this.tasks.splice(this.tasks.indexOf(task.id), 1);
+		return await this._setState(task.id, TASK_ERROR_STATE);
 	}
 
 	start() {
@@ -77,26 +81,29 @@ class QueueListner extends EventEmitter {
 			if (!this.work) { return; }
 			let db = await MongoClient.connect(this.dbUrl);
 			let collection = await db.createCollection(this.collection);
-			let messages = await collection.find({ $or: [{ queueState: { $exists: false } }, { queueState: TASK_PROCESS }] }).limit(this.limit).toArray();
-			messages = messages.filter(m => m.queueState !== TASK_PROCESS);
-			let tasks = await Promise.all(messages.map(async m => {
-				await collection.update({ _id: m._id }, { $set: { queueState: TASK_PROCESS } });
-				m.queueState = TASK_PROCESS;
-				let task = new Task(m);
-				task.on(TASK_DONE, this._taskOnDone);
-				task.on(TASK_ERROR, this._taskOnError);
-				return task;
-			}));
-
-			this.emit("tasks", tasks);
-
+			let messages = await collection.find({ $or: [{ queueState: { $exists: false } }, { queueState: TASK_PROCESS_STATE }] }).limit(this.limit).toArray();
+			messages = messages.filter(m => m.queueState !== TASK_PROCESS_STATE || !this.tasks.includes(m._id.toString()));
+			let tasks = await Promise.all(
+				messages.map(async m => {
+					await collection.update({ _id: m._id }, { $set: { queueState: TASK_PROCESS_STATE } });
+					m.queueState = TASK_PROCESS_STATE;
+					let task = new Task(m);
+					this.tasks.push(task.id);
+					task.on(TASK_DONE_STATE, this._taskOnDone);
+					task.on(TASK_ERROR_STATE, this._taskOnError);
+					return task;
+				})
+			);
+			if (tasks.length) {
+				this.emit("tasks", tasks);
+			}
 			await db.close();
 			await delay(this.delay);
 			return listener();
 		};
 		this.work = true;
 		listener();
-	};
+	}
 
 	stop() {
 		this.work = false;
@@ -104,18 +111,7 @@ class QueueListner extends EventEmitter {
 
 }
 
-const url = "mongodb://localhost:27017/popprod";
-const collection = "messages";
-const queueListner = new QueueListner({ db: { url, collection }, delay: 1000, limit: 1 });
-
-queueListner.on("tasks", (tasks) => {
-	tasks.map(item => {
-		console.log(item.id);
-		setTimeout(function() {
-			item.done();
-		}, 5000);
-	});
-});
-
-queueListner.start();
-
+module.exports = {
+	QueueListner,
+	Task
+};
