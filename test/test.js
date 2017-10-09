@@ -7,27 +7,31 @@ const generate = require("./task-generator").generate;
 
 describe("QueueListener", () => {
 	it("should read all messages from queue", async () => {
-		let tasksCount = await generate();
+		let tasksCount = await generate(14);
+		console.log("task count", tasksCount);
 		const config = require("./config");
 		const QueueListener = require("../").QueueListener;
 		let queueListner = new QueueListener({ db: { url: config.database.mongo.url, collection: config.database.mongo.collection }, delay: 10, limit: 3 });
 
 		await new Promise((resolve) => {
 			queueListner.on("tasks", (tasks) => {
-				tasks.map(task => {
-					console.log(task.id, "received");
+				tasks.map((task, i) => {
+					console.log(JSON.stringify(task.data), "received");
 					setTimeout(() => {
+
+						tasksCount--;
+						console.log(task.id, "- done. left", tasksCount);
 						task.done();
-						if (!--tasksCount) {
+						if (tasksCount === 0) {
 							resolve();
 						}
-					}, 100);
+					}, (i + 1) * 2000);
 				});
 			});
 			queueListner.start();
 		});
 
-		queueListner.stop();
+		// queueListner.stop();
 		return;
 	});
 

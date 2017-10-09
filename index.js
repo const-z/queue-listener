@@ -47,7 +47,8 @@ class QueueListener extends EventEmitter {
 
 	constructor(props) {
 		super();
-		this.work = false;
+		this.inProgress = false;
+		this.active = false;
 		this.collection = props.db.collection;
 		this.dbUrl = props.db.url;
 		this.delay = props.delay || 1000;
@@ -65,67 +66,84 @@ class QueueListener extends EventEmitter {
 	}
 
 	async _setState(taskId, state) {
-		await this._collection.update({ _id: new mongodb.ObjectID(taskId) }, { $set: { queueState: state } });
+		try {
+			await this._collection.update({ _id: new mongodb.ObjectID(taskId) }, { $set: { queueState: state }, $unset: { listenerId: true } });
+		} catch (err) {
+			null;
+		}
 		return;
 	}
 
 	async _taskOnDone(task) {
+		await this._setState(task.id, TASK_DONE_STATE);
 		this.tasks.splice(this.tasks.indexOf(task.id), 1);
-		return await this._setState(task.id, TASK_DONE_STATE);
+		return;
 	}
 
 	async _taskOnError(task) {
+		await this._setState(task.id, TASK_ERROR_STATE);
 		this.tasks.splice(this.tasks.indexOf(task.id), 1);
-		return await this._setState(task.id, TASK_ERROR_STATE);
+		return;
 	}
 
 	async start() {
 		const listener = async () => {
-			if (!this.work) { return; }
+			if (!this.active) {
+				if (this._db.serverConfig.isConnected()) {
+					try { await this._db.close(); } catch (err) { null; }
+				}
+				return;
+			}
 			try {
+				this.inProgress = true;
 				let messages = await this._collection.find({
 					$and: [{
-						$or: [{ queueState: null }, { queueState: TASK_PROCESS_STATE }],
+						queueState: { $nin: [TASK_DONE_STATE, TASK_ERROR_STATE] }
 					}, {
 						$or: [{ listenerId: null }, { listenerId: process.pid }]
 					}]
 				}).limit(this.limit).toArray();
-				messages = messages.filter(m => m.queueState !== TASK_PROCESS_STATE || !this.tasks.includes(m._id.toString()));
-				await this._collection.update({ _id: { $in: messages.map(m => m._id) }, listenerId: null }, { $set: { listenerId: process.pid } }, { multi: true });
-				messages = await this._collection.find({ _id: { $in: messages.map(m => m._id) }, listenerId: process.pid }, { listenerId: false }).limit(this.limit).toArray();
-				let tasks = await Promise.all(
-					messages.map(async m => {
-						await this._collection.update({ _id: m._id }, { $set: { queueState: TASK_PROCESS_STATE } });
-						m.queueState = TASK_PROCESS_STATE;
-						let task = new Task(m);
-						this.tasks.push(task.id);
-						task.on(TASK_DONE_STATE, this._taskOnDone);
-						task.on(TASK_ERROR_STATE, this._taskOnError);
-						return task;
-					})
+				messages = messages.filter(m => !m.queueState || (m.queueState === TASK_PROCESS_STATE && !m.listenerId));
+				await this._collection.update(
+					{ _id: { $in: messages.map(m => m._id) }, listenerId: null, $or: [{ queueState: null }, { $and: [{ queueState: TASK_PROCESS_STATE }, { listenerId: null }] }] },
+					{ $set: { listenerId: process.pid, queueState: TASK_PROCESS_STATE } },
+					{ multi: true }
 				);
+				messages = await this._collection.find({ _id: { $in: messages.map(m => m._id) }, listenerId: process.pid }).limit(this.limit).toArray();
+				let tasks = messages.map(m => {
+					const task = new Task(m);
+					this.tasks.push(task.id);
+					task.on(TASK_DONE_STATE, this._taskOnDone);
+					task.on(TASK_ERROR_STATE, this._taskOnError);
+					return task;
+				});
 				if (tasks.length) {
 					this.emit("tasks", tasks);
 				}
+				await delay(this.delay);
+				return listener();
 			} catch (err) {
-				try { this._db.close(); } catch (err) { null; }
+				if (this._db.serverConfig.isConnected()) {
+					try { this._db.close(); } catch (err) { null; }
+				}
 				try { await this._dbConnect(); } catch (err) { null; }
 				console.error(err);
+			} finally {
+				this.inProgress = false;
 			}
-			await delay(this.delay);
-			return listener();
 		};
 		await this._dbConnect();
 		await this._collection.update({}, { $unset: { listenerId: true } }, { multi: true });
-
-		this.work = true;
+		this.active = true;
 		listener();
 		return;
 	}
 
 	async stop() {
-		await this._db.close();
-		this.work = false;
+		if (!this.inProgress && this._db.serverConfig.isConnected()) {
+			try { await this._db.close(); } catch (err) { null; }
+		}
+		this.active = false;
 	}
 
 }
