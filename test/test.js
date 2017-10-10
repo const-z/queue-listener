@@ -6,7 +6,7 @@ const it = require("mocha").it;
 const generate = require("./task-generator").generate;
 
 describe("QueueListener", () => {
-	it("should read all messages from queue", async () => {
+	it("should read messages from queue", async () => {
 		let tasksCount = await generate(14);
 		console.log("task count", tasksCount);
 		const config = require("./config");
