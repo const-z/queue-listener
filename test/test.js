@@ -10,28 +10,27 @@ describe("QueueListener", () => {
 		let tasksCount = await generate(14);
 		console.log("task count", tasksCount);
 		const config = require("./config");
-		const QueueListener = require("../").QueueListener;
+		const QueueListener = require("../");
 		let queueListner = new QueueListener({ db: { url: config.database.mongo.url, collection: config.database.mongo.collection }, delay: 10, limit: 3 });
 
 		await new Promise((resolve) => {
 			queueListner.on("tasks", (tasks) => {
 				tasks.map((task, i) => {
-					console.log(JSON.stringify(task.data), "received");
+					console.log(JSON.stringify(task), "received");
 					setTimeout(() => {
-
 						tasksCount--;
 						console.log(task.id, "- done. left", tasksCount);
 						task.done();
 						if (tasksCount === 0) {
 							resolve();
 						}
-					}, (i + 1) * 2000);
+					}, (i + 1) * 100);
 				});
 			});
 			queueListner.start();
 		});
 
-		// queueListner.stop();
+		queueListner.stop();
 		return;
 	});
 

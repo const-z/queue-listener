@@ -14,23 +14,25 @@ const delay = (interval) => {
 	});
 };
 
+const taskData = Symbol();
+
 class Task extends EventEmitter {
 
 	constructor(props) {
 		super();
-		this.data = props;
+		this[taskData] = props;
 	}
 
 	get id() {
-		return this.data._id.toString();
+		return this[taskData]._id.toString();
 	}
 
 	set data(value) {
-		this.taskData = value;
+		this[taskData] = value;
 	}
 
 	get data() {
-		return this.taskData;
+		return this[taskData];
 	}
 
 	done() {
@@ -41,114 +43,131 @@ class Task extends EventEmitter {
 		this.emit(TASK_ERROR_STATE, { id: this.id, error });
 	}
 
+	toJSON() {
+		let { id, data } = this;
+		return { id, data };
+	}
+
 }
+
+const func_dbDisconnect = Symbol();
+const func_dbConnect = Symbol();
+const func_setState = Symbol();
+const func_taskOnDone = Symbol();
+const func_taskOnError = Symbol();
+const queueData = Symbol();
 
 class QueueListener extends EventEmitter {
 
 	constructor(props) {
 		super();
-		this.inProgress = false;
-		this.active = false;
-		this.collection = props.db.collection;
-		this.dbUrl = props.db.url;
-		this.delay = props.delay || 1000;
-		this.limit = props.limit || 5;
-		this._taskOnDone = this._taskOnDone.bind(this);
-		this._taskOnError = this._taskOnError.bind(this);
-		this._setState = this._setState.bind(this);
-		this.tasks = [];
+		this[queueData] = {};
+		this[queueData].inProgress = false;
+		this[queueData].active = false;
+		this[queueData].collectionName = props.db.collection;
+		this[queueData].dbUrl = props.db.url;
+		this[queueData].delay = props.delay || 1000;
+		this[queueData].limit = props.limit || 5;
+		this[queueData].tasks = [];
+
+		this[func_taskOnDone] = this[func_taskOnDone].bind(this);
+		this[func_taskOnError] = this[func_taskOnError].bind(this);
+		this[func_setState] = this[func_setState].bind(this);
 	}
 
-	async _dbConnect() {
-		this._db = await MongoClient.connect(this.dbUrl, { autoReconnect: true, keepAlive: 120 });
-		this._collection = await this._db.createCollection(this.collection);
+	async [func_dbConnect]() {
+		this[queueData]._db = await MongoClient.connect(this[queueData].dbUrl, { autoReconnect: true, keepAlive: 120 });
+		this[queueData]._collection = await this[queueData]._db.createCollection(this[queueData].collectionName);
 		return;
 	}
 
-	async _setState(taskId, state) {
+	async [func_dbDisconnect]() {
+		if (this[queueData]._db.serverConfig.isConnected()) {
+			try { await this[queueData]._db.close(); } catch (err) { null; }
+		}
+		return;
+	}
+
+	async [func_setState](taskId, state) {
 		try {
-			await this._collection.update({ _id: new mongodb.ObjectID(taskId) }, { $set: { queueState: state }, $unset: { listenerId: true } });
+			await this[queueData]._collection.update({ _id: new mongodb.ObjectID(taskId) }, { $set: { queueState: state }, $unset: { listenerId: true } });
 		} catch (err) {
 			null;
 		}
 		return;
 	}
 
-	async _taskOnDone(task) {
-		await this._setState(task.id, TASK_DONE_STATE);
-		this.tasks.splice(this.tasks.indexOf(task.id), 1);
+	async [func_taskOnDone](task) {
+		await this[func_setState](task.id, TASK_DONE_STATE);
+		this[queueData].tasks.splice(this[queueData].tasks.indexOf(task.id), 1);
 		return;
 	}
 
-	async _taskOnError(task) {
-		await this._setState(task.id, TASK_ERROR_STATE);
-		this.tasks.splice(this.tasks.indexOf(task.id), 1);
+	async [func_taskOnError](task) {
+		await this[func_setState](task.id, TASK_ERROR_STATE);
+		this[queueData].tasks.splice(this[queueData].tasks.indexOf(task.id), 1);
 		return;
 	}
 
 	async start() {
 		const listener = async () => {
-			if (!this.active) {
-				if (this._db.serverConfig.isConnected()) {
-					try { await this._db.close(); } catch (err) { null; }
-				}
+			if (!this[queueData].active) {
+				await this[func_dbDisconnect]();
+				this.emit("stop");
 				return;
 			}
 			try {
-				this.inProgress = true;
-				let messages = await this._collection.find({
+				this[queueData].inProgress = true;
+				let messages = await this[queueData]._collection.find({
 					$and: [{
 						queueState: { $nin: [TASK_DONE_STATE, TASK_ERROR_STATE] }
 					}, {
 						$or: [{ listenerId: null }, { listenerId: process.pid }]
 					}]
-				}).limit(this.limit).toArray();
+				}).limit(this[queueData].limit).toArray();
 				messages = messages.filter(m => !m.queueState || (m.queueState === TASK_PROCESS_STATE && !m.listenerId));
-				await this._collection.update(
+				await this[queueData]._collection.update(
 					{ _id: { $in: messages.map(m => m._id) }, listenerId: null, $or: [{ queueState: null }, { $and: [{ queueState: TASK_PROCESS_STATE }, { listenerId: null }] }] },
 					{ $set: { listenerId: process.pid, queueState: TASK_PROCESS_STATE } },
 					{ multi: true }
 				);
-				messages = await this._collection.find({ _id: { $in: messages.map(m => m._id) }, listenerId: process.pid }).limit(this.limit).toArray();
+				messages = await this[queueData]._collection.find({ _id: { $in: messages.map(m => m._id) }, listenerId: process.pid }).limit(this[queueData].limit).toArray();
 				let tasks = messages.map(m => {
 					const task = new Task(m);
-					this.tasks.push(task.id);
-					task.on(TASK_DONE_STATE, this._taskOnDone);
-					task.on(TASK_ERROR_STATE, this._taskOnError);
+					this[queueData].tasks.push(task.id);
+					task.on(TASK_DONE_STATE, this[func_taskOnDone]);
+					task.on(TASK_ERROR_STATE, this[func_taskOnError]);
 					return task;
 				});
 				if (tasks.length) {
 					this.emit("tasks", tasks);
 				}
-				await delay(this.delay);
-				return listener();
+				await delay(this[queueData].delay);
 			} catch (err) {
-				if (this._db.serverConfig.isConnected()) {
-					try { this._db.close(); } catch (err) { null; }
+				await this[func_dbDisconnect]();
+				if (!this[queueData].active) {
+					try { await this[func_dbConnect](); } catch (err) { null; }
 				}
-				try { await this._dbConnect(); } catch (err) { null; }
 				console.error(err);
 			} finally {
-				this.inProgress = false;
+				this[queueData].inProgress = false;
 			}
+			return listener();
 		};
-		await this._dbConnect();
-		await this._collection.update({}, { $unset: { listenerId: true } }, { multi: true });
-		this.active = true;
+		await this[func_dbConnect]();
+		await this[queueData]._collection.update({}, { $unset: { listenerId: true } }, { multi: true });
+		this[queueData].active = true;
 		listener();
 		return;
 	}
 
 	async stop() {
-		if (!this.inProgress && this._db.serverConfig.isConnected()) {
-			try { await this._db.close(); } catch (err) { null; }
+		if (!this[queueData].inProgress) {
+			await this[func_dbDisconnect]();
 		}
-		this.active = false;
+		this[queueData].active = false;
 	}
 
 }
 
-module.exports = {
-	QueueListener,
-	Task
-};
+module.exports = QueueListener;
