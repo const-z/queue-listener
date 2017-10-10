@@ -119,24 +119,28 @@ class QueueListener extends EventEmitter {
 			try {
 				this[queueData].inProgress = true;
 				let messages = await this[queueData]._collection.find({
-					$and: [{
-						queueState: { $nin: [TASK_DONE_STATE, TASK_ERROR_STATE] }
-					}, {
-						$or: [{ listenerId: null }, { listenerId: process.pid }]
-					}]
+					queueState: { $nin: [TASK_DONE_STATE, TASK_ERROR_STATE] },
+					$or: [{ listenerId: null }, { listenerId: process.pid }]
 				}).limit(this[queueData].limit).toArray();
 				messages = messages.filter(m => !m.queueState || (m.queueState === TASK_PROCESS_STATE && !m.listenerId));
 				await this[queueData]._collection.update(
-					{ _id: { $in: messages.map(m => m._id) }, listenerId: null, $or: [{ queueState: null }, { $and: [{ queueState: TASK_PROCESS_STATE }, { listenerId: null }] }] },
+					{
+						_id: { $in: messages.map(m => m._id) },
+						listenerId: null,
+						$or: [{ queueState: null }, { $and: [{ queueState: TASK_PROCESS_STATE }, { listenerId: null }] }]
+					},
 					{ $set: { listenerId: process.pid, queueState: TASK_PROCESS_STATE } },
 					{ multi: true }
 				);
-				messages = await this[queueData]._collection.find({ _id: { $in: messages.map(m => m._id) }, listenerId: process.pid }).limit(this[queueData].limit).toArray();
+				messages = await this[queueData]._collection.find({
+					_id: { $in: messages.map(m => m._id) },
+					listenerId: process.pid
+				}).limit(this[queueData].limit).toArray();
 				let tasks = messages.map(m => {
 					const task = new Task(m);
 					this[queueData].tasks.push(task.id);
-					task.on(TASK_DONE_STATE, this[func_taskOnDone]);
-					task.on(TASK_ERROR_STATE, this[func_taskOnError]);
+					task.once(TASK_DONE_STATE, this[func_taskOnDone]);
+					task.once(TASK_ERROR_STATE, this[func_taskOnError]);
 					return task;
 				});
 				if (tasks.length) {
@@ -162,10 +166,13 @@ class QueueListener extends EventEmitter {
 	}
 
 	async stop() {
-		if (!this[queueData].inProgress) {
-			await this[func_dbDisconnect]();
-		}
-		this[queueData].active = false;
+		return await new Promise(resolve => {
+			this[queueData].active = false;
+			this.once("stop", () => {
+				this[queueData].inProgress = false;
+				resolve();
+			});
+		});
 	}
 
 }
