@@ -1,37 +1,30 @@
 "use strict";
 
-const TestCase = require("mocha").describe;
+const describe = require("mocha").describe;
 const it = require("mocha").it;
 
-TestCase("Queue listener", async () => {
-	const tasksIds = [];
-	const messageGenerator = async (urlDB, collectionName) => {
-		const MongoClient = require("mongodb").MongoClient;
-		let db = await MongoClient.connect(urlDB);
-		let collection = await db.createCollection(collectionName);
-		const e = Math.floor(Math.random() * (20 - 5) + 5);
-		for (let i = 0; i < e; i++) {
-			const t = await collection.insert({ name: "test" + Date.now() });
-			tasksIds.push(t.insertedIds[0].toString());
-		}
-		await db.close();
-	};
+const generate = require("./task-generator").generate;
 
-	it("should read all messages from queue", async () => {
+describe("QueueListener", () => {
+	it("should read messages from queue", async () => {
+		let tasksCount = await generate(14);
+		console.log("task count", tasksCount);
 		const config = require("./config");
-		const { QueueListner } = require("../");
-		let queueListner = new QueueListner({ db: { url: config.database.mongo.url, collection: config.database.mongo.collection }, delay: 1000, limit: 5 });
-		await messageGenerator(config.database.mongo.url, config.database.mongo.collection);
+		const QueueListener = require("../");
+		let queueListner = new QueueListener({ db: { url: config.database.mongo.url, collection: config.database.mongo.collection }, delay: 10, limit: 3 });
+
 		await new Promise((resolve) => {
 			queueListner.on("tasks", (tasks) => {
-				tasks.map(task => {
+				tasks.map((task, i) => {
+					console.log(JSON.stringify(task), "received");
 					setTimeout(() => {
-						tasksIds.splice(tasksIds.indexOf(task.id), 1);
+						tasksCount--;
+						console.log(task.id, "- done. left", tasksCount);
 						task.done();
-						if (!tasksIds.length) {
+						if (tasksCount === 0) {
 							resolve();
 						}
-					}, 500);
+					}, (i + 1) * 100);
 				});
 			});
 			queueListner.start();
