@@ -31,8 +31,7 @@ describe("QueueListener", () => {
 			queueListner.start();
 		});
 
-		queueListner.stop();
-		return;
+		return queueListner.stop();		
 	});
 
 	it("start 2", async () => {
@@ -56,8 +55,7 @@ describe("QueueListener", () => {
 			queueListner.start();
 		});
 
-		queueListner.stop();
-		return;
+		return queueListner.stop();		
 	});
 
 });
