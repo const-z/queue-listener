@@ -55,7 +55,11 @@ const func_dbConnect = Symbol();
 const func_setState = Symbol();
 const func_taskOnDone = Symbol();
 const func_taskOnError = Symbol();
+const func_reserveMessages = Symbol();
+const func_createTasks = Symbol();
+const func_listener = Symbol();
 const queueData = Symbol();
+
 
 class QueueListener extends EventEmitter {
 
@@ -109,59 +113,70 @@ class QueueListener extends EventEmitter {
 		return;
 	}
 
-	async start() {
-		const listener = async () => {
+	async [func_reserveMessages]() {
+		let messages = await this[queueData]._collection.find({
+			queueState: { $nin: [TASK_DONE_STATE, TASK_ERROR_STATE] },
+			$or: [{ listenerId: null }, { listenerId: process.pid }]
+		}).limit(this[queueData].limit).toArray();
+		messages = messages.filter(m => !m.queueState || (m.queueState === TASK_PROCESS_STATE && !m.listenerId));
+		const messagesIds = messages.map(m => m._id);
+		await this[queueData]._collection.update(
+			{
+				_id: { $in: messagesIds },
+				listenerId: null,
+				$or: [{ queueState: null }, { $and: [{ queueState: TASK_PROCESS_STATE }, { listenerId: null }] }]
+			},
+			{ $set: { listenerId: process.pid, queueState: TASK_PROCESS_STATE } },
+			{ multi: true }
+		);
+		messages = await this[queueData]._collection.find({
+			_id: { $in: messagesIds },
+			listenerId: process.pid
+		}).limit(this[queueData].limit).toArray();
+		return messages;
+	}
+
+	[func_createTasks](messages) {
+		return messages.map(m => {
+			const task = new Task(m);
+			this[queueData].tasks.push(task.id);
+			task.once(TASK_DONE_STATE, this[func_taskOnDone]);
+			task.once(TASK_ERROR_STATE, this[func_taskOnError]);
+			return task;
+		});
+	}
+
+	async [func_listener]() {
+		if (!this[queueData].active) {
+			await this[func_dbDisconnect]();
+			this.emit("stop");
+			return;
+		}
+		try {
+			this[queueData].inProgress = true;
+			let messages = await this[func_reserveMessages]();
+			const tasks = this[func_createTasks](messages);
+			if (tasks.length) {
+				this.emit("tasks", tasks);
+			}
+			await delay(this[queueData].delay);
+		} catch (err) {
+			await this[func_dbDisconnect]();
 			if (!this[queueData].active) {
-				await this[func_dbDisconnect]();
-				this.emit("stop");
-				return;
+				try { await this[func_dbConnect](); } catch (err) { null; }
 			}
-			try {
-				this[queueData].inProgress = true;
-				let messages = await this[queueData]._collection.find({
-					queueState: { $nin: [TASK_DONE_STATE, TASK_ERROR_STATE] },
-					$or: [{ listenerId: null }, { listenerId: process.pid }]
-				}).limit(this[queueData].limit).toArray();
-				messages = messages.filter(m => !m.queueState || (m.queueState === TASK_PROCESS_STATE && !m.listenerId));
-				await this[queueData]._collection.update(
-					{
-						_id: { $in: messages.map(m => m._id) },
-						listenerId: null,
-						$or: [{ queueState: null }, { $and: [{ queueState: TASK_PROCESS_STATE }, { listenerId: null }] }]
-					},
-					{ $set: { listenerId: process.pid, queueState: TASK_PROCESS_STATE } },
-					{ multi: true }
-				);
-				messages = await this[queueData]._collection.find({
-					_id: { $in: messages.map(m => m._id) },
-					listenerId: process.pid
-				}).limit(this[queueData].limit).toArray();
-				let tasks = messages.map(m => {
-					const task = new Task(m);
-					this[queueData].tasks.push(task.id);
-					task.once(TASK_DONE_STATE, this[func_taskOnDone]);
-					task.once(TASK_ERROR_STATE, this[func_taskOnError]);
-					return task;
-				});
-				if (tasks.length) {
-					this.emit("tasks", tasks);
-				}
-				await delay(this[queueData].delay);
-			} catch (err) {
-				await this[func_dbDisconnect]();
-				if (!this[queueData].active) {
-					try { await this[func_dbConnect](); } catch (err) { null; }
-				}
-				console.error(err);
-			} finally {
-				this[queueData].inProgress = false;
-			}
-			return listener();
-		};
+			console.error(err);
+		} finally {
+			this[queueData].inProgress = false;
+		}
+		return this[func_listener]();
+	}
+
+	async start() {
 		await this[func_dbConnect]();
 		await this[queueData]._collection.update({}, { $unset: { listenerId: true } }, { multi: true });
 		this[queueData].active = true;
-		listener();
+		this[func_listener]();
 		return;
 	}
 
