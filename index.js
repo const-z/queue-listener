@@ -59,7 +59,7 @@ const func_reserveMessages = Symbol();
 const func_createTasks = Symbol();
 const func_listener = Symbol();
 const queueData = Symbol();
-
+const listenerId = Symbol();
 
 class QueueListener extends EventEmitter {
 
@@ -77,6 +77,12 @@ class QueueListener extends EventEmitter {
 		this[func_taskOnDone] = this[func_taskOnDone].bind(this);
 		this[func_taskOnError] = this[func_taskOnError].bind(this);
 		this[func_setState] = this[func_setState].bind(this);
+
+		this[listenerId] = `${process.pid}-${new mongodb.ObjectID()}`;
+	}
+
+	get id() {
+		return this[listenerId];
 	}
 
 	async [func_dbConnect]() {
@@ -94,7 +100,10 @@ class QueueListener extends EventEmitter {
 
 	async [func_setState](taskId, state) {
 		try {
-			await this[queueData]._collection.update({ _id: new mongodb.ObjectID(taskId) }, { $set: { queueState: state }, $unset: { listenerId: true } });
+			await this[queueData]._collection.update(
+				{ _id: new mongodb.ObjectID(taskId) },
+				{ $set: { queueState: state, endProc: new Date() }, $unset: { listenerId: true } }
+			);
 		} catch (err) {
 			null;
 		}
@@ -116,7 +125,7 @@ class QueueListener extends EventEmitter {
 	async [func_reserveMessages]() {
 		let messages = await this[queueData]._collection.find({
 			queueState: { $nin: [TASK_DONE_STATE, TASK_ERROR_STATE] },
-			$or: [{ listenerId: null }, { listenerId: process.pid }]
+			$or: [{ listenerId: null }, { listenerId: this[listenerId] }]
 		}).limit(this[queueData].limit).toArray();
 		messages = messages.filter(m => !m.queueState || (m.queueState === TASK_PROCESS_STATE && !m.listenerId));
 		const messagesIds = messages.map(m => m._id);
@@ -126,12 +135,12 @@ class QueueListener extends EventEmitter {
 				listenerId: null,
 				$or: [{ queueState: null }, { $and: [{ queueState: TASK_PROCESS_STATE }, { listenerId: null }] }]
 			},
-			{ $set: { listenerId: process.pid, queueState: TASK_PROCESS_STATE } },
+			{ $set: { listenerId: this[listenerId], queueState: TASK_PROCESS_STATE, startProc: new Date() } },
 			{ multi: true }
 		);
 		messages = await this[queueData]._collection.find({
 			_id: { $in: messagesIds },
-			listenerId: process.pid
+			listenerId: this[listenerId]
 		}).limit(this[queueData].limit).toArray();
 		return messages;
 	}
