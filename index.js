@@ -1,8 +1,7 @@
 "use strict";
 
 const EventEmitter = require("events").EventEmitter;
-const mongodb = require("mongodb");
-const MongoClient = require("mongodb").MongoClient;
+const {MongoClient, ObjectID } = require("mongodb");
 
 const TASK_PROCESS_STATE = "task_process";
 const TASK_DONE_STATE = "task_done";
@@ -78,7 +77,7 @@ class QueueListener extends EventEmitter {
 		this[func_taskOnError] = this[func_taskOnError].bind(this);
 		this[func_setState] = this[func_setState].bind(this);
 
-		this[listenerId] = `${process.pid}-${new mongodb.ObjectID()}`;
+		this[listenerId] = `${process.pid}-${new ObjectID()}`;
 	}
 
 	get id() {
@@ -101,7 +100,7 @@ class QueueListener extends EventEmitter {
 	async [func_setState](taskId, state) {
 		try {
 			await this[queueData]._collection.update(
-				{ _id: new mongodb.ObjectID(taskId) },
+				{ _id: new ObjectID(taskId) },
 				{ $set: { queueState: state, endProc: new Date() }, $unset: { listenerId: true } }
 			);
 		} catch (err) {
