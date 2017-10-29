@@ -1,7 +1,7 @@
 "use strict";
 
 const EventEmitter = require("events").EventEmitter;
-const {MongoClient, ObjectID } = require("mongodb");
+const { MongoClient, ObjectID } = require("mongodb");
 
 const TASK_PROCESS_STATE = "task_process";
 const TASK_DONE_STATE = "task_done";
